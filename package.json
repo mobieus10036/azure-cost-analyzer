@@ -1,7 +1,7 @@
 {
   "name": "az-cost-assessment",
   "version": "1.0.0",
-  "description": "A simple local-first Azure cost analysis tool for tracking spending, identifying trends, and optimizing cloud costs. No Azure Storage dependencies required.",
+  "description": "A local-first Azure FinOps investigation tool. Attributes daily cost spikes to specific services, detects anomalies, forecasts spend, and surfaces waste — no shared infrastructure required.",
   "main": "src/app.ts",
   "engines": {
     "node": ">=18.0.0",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mobieus10036/az-cost-assessment.git"
+    "url": "https://github.com/mobieus10036/azure-finops-assessment.git"
   },
   "keywords": [
     "azure",
@@ -21,12 +21,12 @@
     "cost-tracking",
     "azure-sdk"
   ],
-  "author": "",
+  "author": "Mobieus",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/mobieus10036/az-cost-assessment/issues"
+    "url": "https://github.com/mobieus10036/azure-finops-assessment/issues"
   },
-  "homepage": "https://github.com/mobieus10036/az-cost-assessment#readme",
+  "homepage": "https://github.com/mobieus10036/azure-finops-assessment#readme",
   "scripts": {
     "start": "ts-node src/app.ts",
     "setup": "ts-node src/utils/interactiveSetup.ts",
