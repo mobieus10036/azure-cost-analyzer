@@ -61,7 +61,8 @@ export class AzureCostManagementService {
     }
 
     /**
-     * Execute API call with retry logic for rate limiting
+     * Execute API call with retry logic for rate limiting.
+     * Respects the Retry-After header returned by Azure on 429 responses.
      */
     private async executeWithRetry<T>(operation: () => Promise<T>, operationName: string): Promise<T> {
         for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
@@ -72,8 +73,25 @@ export class AzureCostManagementService {
                                         error?.statusCode === 429;
                 
                 if (isRateLimitError && attempt < this.MAX_RETRIES) {
-                    const waitTime = Math.min(this.RETRY_DELAY_MS * Math.pow(2, attempt - 1), this.RETRY_MAX_DELAY_MS);
-                    logWarning(`Rate limit hit for ${operationName}. Waiting ${waitTime}ms before retry ${attempt}/${this.MAX_RETRIES}...`);
+                    // Honour the Retry-After header if Azure provides one
+                    const retryAfterRaw = error?.response?.headers?.get?.('retry-after') ??
+                                         error?.response?.headers?.['retry-after'];
+                    const retryAfterMs = retryAfterRaw && !isNaN(parseInt(retryAfterRaw, 10))
+                        ? parseInt(retryAfterRaw, 10) * 1000
+                        : null;
+
+                    const backoffMs = Math.min(
+                        this.RETRY_DELAY_MS * Math.pow(2, attempt - 1),
+                        this.RETRY_MAX_DELAY_MS
+                    );
+                    // Use whichever is larger: Azure's instruction or our backoff
+                    const waitTime = retryAfterMs ? Math.max(retryAfterMs, backoffMs) : backoffMs;
+
+                    logWarning(
+                        `Rate limit hit for ${operationName}. ` +
+                        `Waiting ${waitTime}ms before retry ${attempt}/${this.MAX_RETRIES}` +
+                        (retryAfterMs ? ` (Retry-After: ${retryAfterMs}ms)` : '') + '...'
+                    );
                     await this.delay(waitTime);
                 } else {
                     throw error;
@@ -474,6 +492,9 @@ export class AzureCostManagementService {
                 () => this.client.query.usage(this.scope, dailyServiceQuery as any),
                 'daily service costs query'
             );
+            // Delay after the final sub-query so the caller's next queryActualCosts
+            // call doesn't immediately hit the API again
+            await this.delay(this.API_DELAY_MS);
 
             // Parse daily costs
             const dailyCosts: CostDataPoint[] = [];
