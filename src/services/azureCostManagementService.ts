@@ -120,13 +120,16 @@ export class AzureCostManagementService {
             const analysisConfig = configService.getAnalysisConfig();
             const now = new Date();
             
-            // Fetch historical data first (will be reused for forecast)
-            logInfo('Fetching historical data...');
-            const historical = await this.getHistoricalCostData(analysisConfig.historicalDays);
-            
-            // Fetch current month data (parallel-friendly queries are batched internally)
-            logInfo('Fetching current month data...');
-            const current = await this.getCurrentCostData();
+            // Fetch a wide enough window to cover 3 full calendar months + current month.
+            // This lets us derive all monthly comparisons from a single query set (3 API calls)
+            // instead of calling getCurrentCostData() which fires 9 separate API calls.
+            const wideDays = Math.max(analysisConfig.historicalDays, 92);
+            logInfo(`Fetching historical data (${wideDays} days)...`);
+            const historical = await this.getHistoricalCostData(wideDays);
+
+            // Derive current month data from historical — no additional API calls
+            logInfo('Deriving current month data from historical...');
+            const current = this.deriveCurrentCostDataFromHistorical(historical);
             
             // Generate forecast using cached historical data (no additional API calls needed)
             logInfo('Generating forecast...');
@@ -205,7 +208,91 @@ export class AzureCostManagementService {
     }
 
     /**
+     * Derive CurrentCostData from pre-fetched historical data.
+     * Avoids 9 additional API calls by filtering the already-fetched daily arrays.
+     * topCostResources uses the full-period aggregation as a close approximation.
+     */
+    private deriveCurrentCostDataFromHistorical(historical: HistoricalCostData): CurrentCostData {
+        const now = new Date();
+        const monthStart = startOfMonth(now);
+        const monthEnd = endOfMonth(now);
+        const prevMonthStart = subMonths(monthStart, 1);
+        const prevMonthEnd = endOfMonth(prevMonthStart);
+        const twoMonthsAgoStart = subMonths(monthStart, 2);
+        const twoMonthsAgoEnd = endOfMonth(twoMonthsAgoStart);
+
+        const inRange = (dateStr: string, start: Date, end: Date): boolean => {
+            const d = new Date(dateStr);
+            return d >= start && d <= end;
+        };
+
+        const currentMonthDaily  = historical.dailyCosts.filter(d => inRange(d.date, monthStart, now));
+        const prevMonthDaily     = historical.dailyCosts.filter(d => inRange(d.date, prevMonthStart, prevMonthEnd));
+        const twoMonthsAgoDaily  = historical.dailyCosts.filter(d => inRange(d.date, twoMonthsAgoStart, twoMonthsAgoEnd));
+
+        const sum = (pts: CostDataPoint[]) => pts.reduce((acc, p) => acc + p.cost, 0);
+        const currentMonthTotal  = sum(currentMonthDaily);
+        const prevMonthTotal     = sum(prevMonthDaily);
+        const twoMonthsAgoTotal  = sum(twoMonthsAgoDaily);
+        const currency = historical.currency;
+
+        // Aggregate per-service totals for the current month from daily service data
+        const svcMap = new Map<string, { cost: number; serviceCategory: string }>();
+        historical.dailyServiceCosts
+            .filter(d => inRange(d.date, monthStart, now))
+            .forEach(d => {
+                const entry = svcMap.get(d.serviceName) ?? { cost: 0, serviceCategory: d.serviceCategory };
+                entry.cost += d.cost;
+                svcMap.set(d.serviceName, entry);
+            });
+        const topCostServices: CostByService[] = Array.from(svcMap.entries())
+            .map(([serviceName, { cost, serviceCategory }]) => ({
+                serviceName,
+                serviceCategory,
+                cost,
+                currency,
+                percentageOfTotal: currentMonthTotal > 0 ? (cost / currentMonthTotal) * 100 : 0,
+            }))
+            .sort((a, b) => b.cost - a.cost)
+            .slice(0, 10);
+
+        const daysElapsed = Math.max(1, Math.floor((now.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+        const daysInMonth  = Math.floor((monthEnd.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+        const estimatedMonthEndCost = (currentMonthTotal / daysElapsed) * daysInMonth;
+
+        const changeAmount   = currentMonthTotal - prevMonthTotal;
+        const changePercent  = prevMonthTotal > 0 ? (changeAmount / prevMonthTotal) * 100 : 0;
+        const lastTwoMonthsChangeAmount  = prevMonthTotal - twoMonthsAgoTotal;
+        const lastTwoMonthsChangePercent = twoMonthsAgoTotal > 0 ? (lastTwoMonthsChangeAmount / twoMonthsAgoTotal) * 100 : 0;
+        const projectedChangeAmount  = estimatedMonthEndCost - prevMonthTotal;
+        const projectedChangePercent = prevMonthTotal > 0 ? (projectedChangeAmount / prevMonthTotal) * 100 : 0;
+
+        logInfo(`Current month-to-date (derived): ${currentMonthTotal} ${currency}`);
+        return {
+            billingPeriodStart: monthStart.toISOString(),
+            billingPeriodEnd:   monthEnd.toISOString(),
+            currentDate:        now.toISOString(),
+            monthToDateCost:    currentMonthTotal,
+            estimatedMonthEndCost,
+            currency,
+            dailyCosts:       currentMonthDaily,
+            topCostResources: historical.costByResource.slice(0, 10),
+            topCostServices,
+            comparisonToPreviousMonth: { previousMonthTotal: prevMonthTotal, changeAmount, changePercent },
+            monthlyComparison: {
+                twoMonthsAgo: { name: format(twoMonthsAgoStart, 'MMMM yyyy'), total: twoMonthsAgoTotal },
+                lastMonth:    { name: format(prevMonthStart,    'MMMM yyyy'), total: prevMonthTotal },
+                currentMonth: { name: format(monthStart, 'MMMM yyyy'), monthToDate: currentMonthTotal, projected: estimatedMonthEndCost },
+                lastTwoMonthsChange: { amount: lastTwoMonthsChangeAmount, percent: lastTwoMonthsChangePercent },
+                projectedChange:     { amount: projectedChangeAmount,     percent: projectedChangePercent },
+            },
+        };
+    }
+
+    /**
      * Get current month-to-date cost data
+     * Note: called directly only when historical data is unavailable.
+     * The main analysis path uses deriveCurrentCostDataFromHistorical instead.
      */
     public async getCurrentCostData(): Promise<CurrentCostData> {
         try {
