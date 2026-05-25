@@ -5,10 +5,10 @@
     "scope": "",
     "costManagement": {
       "liveDataOnly": true,
-      "apiDelayMs": 5000,
-      "maxRetries": 5,
+      "apiDelayMs": 8000,
+      "maxRetries": 7,
       "retryBaseDelayMs": 15000,
-      "retryMaxDelayMs": 120000
+      "retryMaxDelayMs": 300000
     }
   },
   "analysis": {
