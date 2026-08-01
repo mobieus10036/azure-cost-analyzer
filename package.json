@@ -48,7 +48,7 @@
     "@azure/data-tables": "^13.3.0",
     "@azure/identity": "^4.5.0",
     "@azure/storage-blob": "^12.25.0",
-    "chalk": "^4.1.2",
+    "chalk": "^6.0.0",
     "config": "^3.3.12",
     "date-fns": "^4.1.0",
     "dotenv": "^16.4.5",
